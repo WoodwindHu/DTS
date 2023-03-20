@@ -1,11 +1,11 @@
 # DTS
-DTA is an unsupervised domain adaption method on 3D object detection, which is accepted on CVPR2021.
+DTA is an unsupervised domain adaption method on 3D object detection, which is accepted on CVPR2023.
 
-Copyright (C) 2020 Qianjiang Hu*, Xiao Wang*, Wei Hu, Guo-Jun Qi
+Copyright (C) 2023 Qianjiang Hu*, Daizong Liu, Wei Hu
 
 License: MIT for academic use.
 
-Contact: Guo-Jun Qi (guojunq@gmail.com)
+Contact: Wei Hu (forhuwei@pku.edu.cn)
 
 # Introduction
 
@@ -19,10 +19,12 @@ To further adapt the property of density-insensitive into the target domain, we 
 Experimental results on three widely adopted 3D object detection datasets demonstrate that our proposed domain adaption method outperforms the state-of-the-art methods, especially over varying-density data.
 
 # Installation
-Coming soon
+
+Please refer to [INSTALL.md](docs/INSTALL.md) for the installation of `OpenPCDet`.
 
 # Usage
-Coming soon
+
+Please refer to [GETTING_STARTED.md](docs/GETTING_STARTED.md) to learn more usage about this project.
 
 # Citation
 ```
