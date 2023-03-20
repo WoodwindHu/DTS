@@ -1,7 +1,7 @@
 # DTS
 DTA is an unsupervised domain adaption method on 3D object detection, which is accepted on CVPR2023.
 
-Copyright (C) 2023 Qianjiang Hu*, Daizong Liu, Wei Hu
+Copyright (C) 2023 Qianjiang Hu, Daizong Liu, Wei Hu
 
 License: MIT for academic use.
 
