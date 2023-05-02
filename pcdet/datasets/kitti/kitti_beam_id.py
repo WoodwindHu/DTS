@@ -2,6 +2,7 @@ import numpy as np
 import os
 import tqdm
 import argparse
+from functools import partial
 
 def parse_config():
     parser = argparse.ArgumentParser(description='arg parser')
@@ -50,5 +51,9 @@ def get_beam_id(path, pc_index):
 if __name__=='__main__':
     args = parse_config()
     os.makedirs(os.path.join(args.data_path, 'training/velodyne/beam_id'),exist_ok=True)
-    for i in tqdm.tqdm(range(7518)):
-        get_beam_id(os.path.join(args.data_path, "training/velodyne"), i)
+    sample_id_list = range(7481)
+    num_workers=32
+    import concurrent.futures as futures
+    get_beam_id = partial(get_beam_id, path=os.path.join(args.data_path, "training/velodyne"))
+    with futures.ThreadPoolExecutor(num_workers) as executor:
+            infos = executor.map(get_beam_id, sample_id_list)
