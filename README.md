@@ -28,9 +28,9 @@ Experimental results on three widely adopted 3D object detection datasets demons
 ### nuScenes -> KITTI TASK
 |                                                                                                | Car@R40 |  download |
 |------------------------------------------------------------------------------------------------|:-------:|:---------:|
-| [SECOND-IoU](tools/cfgs/da-nuscenes-kitti_models/secondiou_dts/dts.yaml)                       |  66.6   | [model](https://drive.google.com/file/d/12YFee846dvCgyEeiaVGke-x6I8sNjjiM/view?usp=share_link) | 
-| [PV-RCNN](tools/cfgs/da-nuscenes-kitti_models/pvrcnn_dts/dts.yaml)                             |  71.8   | [model](https://drive.google.com/file/d/1CBjimQMctengq58ZEg2dadu2H85qsyl4/view?usp=share_link) |
-| [PointPillar](tools/cfgs/da-nuscenes-kitti_models/pointpillars_dts/dts.yaml)                   |  51.8   | [model](https://drive.google.com/file/d/1vRd99-s_q-rM07d7_0ft_KI68ON3i94-/view?usp=share_link)  | 
+| [SECOND-IoU](tools/cfgs/da-nuscenes-kitti_models/secondiou_dts/dts.yaml)                       |  66.6   | [pretrained](https://drive.google.com/file/d/1Gb7KiA9MPeglC_g1O2lLkaeSr0DukpV4/view?usp=share_link) \| [model](https://drive.google.com/file/d/12YFee846dvCgyEeiaVGke-x6I8sNjjiM/view?usp=share_link) | 
+| [PV-RCNN](tools/cfgs/da-nuscenes-kitti_models/pvrcnn_dts/dts.yaml)                             |  71.8   | [pretrained](https://drive.google.com/file/d/1IJMKWMPUploIbpM77kZxxujEUyDpnHf8/view?usp=share_link) \| [model](https://drive.google.com/file/d/1CBjimQMctengq58ZEg2dadu2H85qsyl4/view?usp=share_link) |
+| [PointPillar](tools/cfgs/da-nuscenes-kitti_models/pointpillars_dts/dts.yaml)                   |  51.8   | [pretrained](https://drive.google.com/file/d/1rWMWMXnt7lmQ3VQJSiNn1kj1on6-UQG3/view?usp=share_link) \| [model](https://drive.google.com/file/d/1vRd99-s_q-rM07d7_0ft_KI68ON3i94-/view?usp=share_link)  | 
 
 
 ### Waymo -> KITTI TASK
