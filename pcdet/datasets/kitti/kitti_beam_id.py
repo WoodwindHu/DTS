@@ -12,7 +12,7 @@ def parse_config():
 
     return args
 
-def get_beam_id(path, pc_index):
+def get_beam_id(pc_index, path):
     print(f'processing {pc_index}')
     pc_kitti = np.fromfile(os.path.join(path, "%06d.bin"%(pc_index)), dtype=np.float32).reshape(-1,4)
     beam_id = np.zeros(pc_kitti.shape[0], dtype=np.float32)
