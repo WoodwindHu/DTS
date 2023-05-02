@@ -49,5 +49,6 @@ def get_beam_id(path, pc_index):
     
 if __name__=='__main__':
     args = parse_config()
+    os.makedirs(os.path.join(args.data_path, 'training/velodyne/beam_id'),exist_ok=True)
     for i in tqdm.tqdm(range(7518)):
         get_beam_id(os.path.join(args.data_path, "training/velodyne"), i)
