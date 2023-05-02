@@ -14,7 +14,7 @@ def parse_config():
 
 def get_beam_id(pc_index, path):
     print(f'processing {pc_index}')
-    pc_kitti = np.fromfile(os.path.join(path, "%06d.bin"%(pc_index)), dtype=np.float32).reshape(-1,4)
+    pc_kitti = np.fromfile(os.path.join(path, 'velodyne', "%06d.bin"%(pc_index)), dtype=np.float32).reshape(-1,4)
     beam_id = np.zeros(pc_kitti.shape[0], dtype=np.float32)
     selected = True
     beam_count=0
@@ -47,14 +47,14 @@ def get_beam_id(pc_index, path):
     elif beam_count>=64:
         print("gg, sort failed")
         return 
-    beam_id.tofile(os.path.join(path, "beam_id", "%06d.bin"%(pc_index)))
+    beam_id.tofile(os.path.join(path, "beam_labels", "%06d.bin"%(pc_index)))
     
 if __name__=='__main__':
     args = parse_config()
-    os.makedirs(os.path.join(args.data_path, 'training/velodyne/beam_id'),exist_ok=True)
+    os.makedirs(os.path.join(args.data_path, 'training/beam_labels'),exist_ok=True)
     sample_id_list = range(7481)
     num_workers=32
     import concurrent.futures as futures
-    get_beam_id = partial(get_beam_id, path=os.path.join(args.data_path, "training/velodyne"))
+    get_beam_id = partial(get_beam_id, path=os.path.join(args.data_path, "training"))
     with futures.ThreadPoolExecutor(num_workers) as executor:
             infos = executor.map(get_beam_id, sample_id_list)
