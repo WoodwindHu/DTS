@@ -1,4 +1,4 @@
-DATASET: 'KittiDatasetMeanTeacher'
+DATASET: 'KittiDatasetMT'
 DATA_PATH: '../data/kitti'
 
 POINT_CLOUD_RANGE: [-75.2, -75.2, -2, 75.2, 75.2, 4]
