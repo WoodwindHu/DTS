@@ -10,6 +10,7 @@ import numpy as np
 import torch
 import torch.distributed as dist
 import torch.multiprocessing as mp
+from ..ops.iou3d_nms import iou3d_nms_utils
 
 
 def check_numpy_to_torch(x):

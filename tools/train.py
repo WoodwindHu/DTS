@@ -131,7 +131,7 @@ def main():
     model = build_network(model_cfg=cfg.MODEL, num_class=len(cfg.CLASS_NAMES),
                           dataset=source_set)
     ema_model = None
-    if cfg.get('SELF_TRAIN', None) and cfg.SELF_TRAIN.TAR.get('TEACHER', None):
+    if cfg.MODEL.NAME.endswith('MT'):
         ema_model = build_network(model_cfg=cfg.MODEL, num_class=len(cfg.CLASS_NAMES), dataset=source_set)
         for param in ema_model.parameters():
             param.detach_()
