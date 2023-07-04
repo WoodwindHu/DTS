@@ -23,6 +23,14 @@ class KittiDatasetMT(KittiDataset):
         super().__init__(
             dataset_cfg=dataset_cfg, class_names=class_names, training=training, root_path=root_path, logger=logger
         )
+        self.split = self.dataset_cfg.DATA_SPLIT[self.mode]
+        self.root_split_path = self.root_path / ('training' if self.split != 'test' else 'testing')
+
+        split_dir = self.root_path / 'ImageSets' / (self.split + '.txt')
+        self.sample_id_list = [x.strip() for x in open(split_dir).readlines()] if split_dir.exists() else None
+
+        self.kitti_infos = []
+        self.include_kitti_data(self.mode)
     
     def __getitem__(self, index):
         # index = 4
@@ -33,27 +41,19 @@ class KittiDatasetMT(KittiDataset):
 
         sample_idx = info['point_cloud']['lidar_idx']
 
-        points = self.get_lidar(sample_idx)
-        beam_labels = self.get_beam_labels(sample_idx)
         calib = self.get_calib(sample_idx)
 
         img_shape = info['image']['image_shape']
-        if self.dataset_cfg.FOV_POINTS_ONLY:
-            pts_rect = calib.lidar_to_rect(points[:, 0:3])
-            fov_flag = self.get_fov_flag(pts_rect, img_shape, calib)
-            points = points[fov_flag]
-            beam_labels = beam_labels[fov_flag]
+        calib = self.get_calib(sample_idx)
+        get_item_list = self.dataset_cfg.get('GET_ITEM_LIST', ['points'])
 
-        if self.dataset_cfg.get('SHIFT_COOR', None):
-            points[:, 0:3] += np.array(self.dataset_cfg.SHIFT_COOR, dtype=np.float32)
 
         input_dict = {
-            'points': points,
-            'beam_labels': beam_labels,
             'frame_id': sample_idx,
             'calib': calib,
             'image_shape': img_shape
         }
+
 
         if 'annos' in info:
             annos = info['annos']
@@ -77,8 +77,14 @@ class KittiDatasetMT(KittiDataset):
                 input_dict['gt_boxes'] = input_dict['gt_boxes'][mask]
                 input_dict['gt_names'] = input_dict['gt_names'][mask]
 
+            if "gt_boxes2d" in get_item_list:
+                input_dict['gt_boxes2d'] = annos["bbox"]
+
             if self.dataset_cfg.get('USE_PSEUDO_LABEL', None) and self.training:
                 input_dict['gt_boxes'] = None
+
+            
+
 
             # for debug only
             # gt_boxes_mask = np.array([n in self.class_names for n in input_dict['gt_names']], dtype=np.bool_)
@@ -87,19 +93,73 @@ class KittiDatasetMT(KittiDataset):
             road_plane = self.get_road_plane(sample_idx)
             if road_plane is not None:
                 input_dict['road_plane'] = road_plane
-
+        
         # load saved pseudo label for unlabel data
         if self.dataset_cfg.get('USE_PSEUDO_LABEL', None) and self.training:
             self.fill_pseudo_labels(input_dict)
+        
+            
+        if "points" in get_item_list:
+            points = self.get_lidar(sample_idx)
+            beam_labels = self.get_beam_labels(sample_idx)
+            if self.dataset_cfg.FOV_POINTS_ONLY:
+                pts_rect = calib.lidar_to_rect(points[:, 0:3])
+                fov_flag = self.get_fov_flag(pts_rect, img_shape, calib)
+                points = points[fov_flag]
+                beam_labels = beam_labels[fov_flag]
+            if self.dataset_cfg.get('SHIFT_COOR', None):
+                points[:, 0:3] += np.array(self.dataset_cfg.SHIFT_COOR, dtype=np.float32)
+            if self.dataset_cfg.get('BEAM', None):
+                beam = self.dataset_cfg.get('BEAM', None)
+                beam_mask = np.ones(64, dtype=np.bool)
+                if beam == 48:
+                    beam_mask[::4] = 0
+                elif beam == 32:
+                    beam_mask[::2] = 0
+                elif beam == 16:
+                    beam_mask[3::4] = 0
+                    beam_mask[::2] = 0
+                else:
+                    raise NotImplementedError
+                points_mask = beam_mask[beam_labels]
+                points = points[points_mask]
+                beam_labels = beam_labels[points_mask]
+            input_dict['points'] = points
+            input_dict['beam_labels'] = beam_labels
 
-        data_dict1 = copy.deepcopy(input_dict)
-        data_dict2 = copy.deepcopy(input_dict)
-        data_dict1 = self.prepare_data(data_dict=data_dict1)
-        if isinstance(data_dict1, list):    # len(data_dict['gt_boxes']) == 0
-            return data_dict1
-        data_dict2 = self.prepare_data_teacher(data_dict=data_dict2)
-        if isinstance(data_dict2, list):    # len(data_dict['gt_boxes']) == 0
-            return data_dict2
+        if "images" in get_item_list:
+            input_dict['images'] = self.get_image(sample_idx)
+
+        if "depth_maps" in get_item_list:
+            input_dict['depth_maps'] = self.get_depth_map(sample_idx)
+
+        if "calib_matricies" in get_item_list:
+            input_dict["trans_lidar_to_cam"], input_dict["trans_cam_to_img"] = kitti_utils.calib_to_matricies(calib)
+
+        
+        if self.dataset_cfg.SAME_POINT_SAMPLING:
+            # perform gt sampling here before point sampling to ensure fixed number of points
+            # if self.pre_data_augmentor:
+            #     gt_boxes_mask = np.array([n in self.class_names for n in input_dict['gt_names']], dtype=np.bool_)
+            #     input_dict['gt_boxes_mask'] = gt_boxes_mask
+            #     input_dict = self.pre_data_augmentor.forward(data_dict=input_dict)
+
+            data_dict1 = copy.deepcopy(input_dict)
+            data_dict2 = copy.deepcopy(input_dict)
+            assert isinstance(data_dict1, dict)
+            data_dict1 = self.prepare_data(data_dict=data_dict1)
+            if isinstance(data_dict1, list):    # len(data_dict['gt_boxes']) == 0
+                return data_dict1
+            if self.dataset_cfg.get('AUGMENT_TEACHER', False):
+                data_dict2 = self.prepare_data(data_dict=data_dict2)
+            else:
+                data_dict2 = self.prepare_data_teacher(data_dict=data_dict2)
+            if isinstance(data_dict2, list):    # len(data_dict['gt_boxes']) == 0
+                return data_dict2
+            data_dict1['image_shape'] = img_shape
+            data_dict2['image_shape'] = img_shape
+        else:
+            raise NotImplementedError
         
         output = [data_dict1, data_dict2]
         return output

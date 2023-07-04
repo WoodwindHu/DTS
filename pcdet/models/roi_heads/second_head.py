@@ -1,14 +1,11 @@
-from functools import partial
-
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 from .roi_head_template import RoIHeadTemplate
 from ...utils import common_utils, loss_utils
 
 
 class SECONDHead(RoIHeadTemplate):
-    def __init__(self, input_channels, model_cfg, num_class=1):
+    def __init__(self, input_channels, model_cfg, num_class=1, **kwargs):
         super().__init__(num_class=num_class, model_cfg=model_cfg)
         self.model_cfg = model_cfg
 
@@ -33,13 +30,6 @@ class SECONDHead(RoIHeadTemplate):
             input_channels=pre_channel, output_channels=1, fc_list=self.model_cfg.IOU_FC
         )
         self.init_weights(weight_init='xavier')
-
-        if torch.__version__ >= '1.3':
-            self.affine_grid = partial(F.affine_grid, align_corners=True)
-            self.grid_sample = partial(F.grid_sample, align_corners=True)
-        else:
-            self.affine_grid = F.affine_grid
-            self.grid_sample = F.grid_sample
 
     def init_weights(self, weight_init='xavier'):
         if weight_init == 'kaiming':
@@ -102,12 +92,12 @@ class SECONDHead(RoIHeadTemplate):
             ), dim=1).view(-1, 2, 3).float()
 
             grid_size = self.model_cfg.ROI_GRID_POOL.GRID_SIZE
-            grid = self.affine_grid(
+            grid = nn.functional.affine_grid(
                 theta,
                 torch.Size((rois.size(1), spatial_features_2d.size(1), grid_size, grid_size))
             )
 
-            pooled_features = self.grid_sample(
+            pooled_features = nn.functional.grid_sample(
                 spatial_features_2d[b_id].unsqueeze(0).expand(rois.size(1), spatial_features_2d.size(1), height, width),
                 grid
             )

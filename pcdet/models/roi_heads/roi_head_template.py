@@ -9,7 +9,7 @@ from .target_assigner.proposal_target_layer import ProposalTargetLayer
 
 
 class RoIHeadTemplate(nn.Module):
-    def __init__(self, num_class, model_cfg, is_loss=True, ):
+    def __init__(self, num_class, model_cfg, is_loss=True, **kwargs):
         super().__init__()
         self.model_cfg = model_cfg
         self.num_class = num_class
@@ -62,6 +62,8 @@ class RoIHeadTemplate(nn.Module):
                 roi_labels: (B, num_rois)
 
         """
+        if batch_dict.get('rois', None) is not None:
+            return batch_dict
         batch_size = batch_dict['batch_size']
         batch_box_preds = batch_dict['batch_box_preds']
         batch_cls_preds = batch_dict['batch_cls_preds']

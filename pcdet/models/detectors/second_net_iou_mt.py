@@ -56,10 +56,7 @@ class SECONDNetIoUMT(Detector3DTemplate):
                 batch_merge = cur_module(batch_merge)
             batch_target1 = batch_merge
 
-        # do post processing for target data
-        # post_processing不能用在self.training的时候，会和pcdet/models/roi_heads/roi_head_template.py中的assign_targets冲突
-        # pred_dicts2, _ = self.post_processing(batch_target2)
-        # pred_dicts1, _ = self.post_processing(batch_target1)
+        
 
         assert self.training
         

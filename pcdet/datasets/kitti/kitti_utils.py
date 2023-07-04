@@ -48,6 +48,10 @@ def transform_annotations_to_kitti_format(annos, map_name_to_kitti=None, info_wi
         anno['bbox'][:, 2:4] = 50  # [0, 0, 50, 50]
         anno['truncated'] = np.zeros(len(anno['name']))
         anno['occluded'] = np.zeros(len(anno['name']))
+        if 'boxes_lidar' in anno:
+            gt_boxes_lidar = anno['boxes_lidar'].copy()
+        else:
+            gt_boxes_lidar = anno['gt_boxes_lidar'].copy()
 
         if len(gt_boxes_lidar) > 0:
             if info_with_fakelidar:
@@ -68,6 +72,22 @@ def transform_annotations_to_kitti_format(annos, map_name_to_kitti=None, info_wi
 
     return annos
 
+
+def calib_to_matricies(calib):
+    """
+    Converts calibration object to transformation matricies
+    Args:
+        calib: calibration.Calibration, Calibration object
+    Returns
+        V2R: (4, 4), Lidar to rectified camera transformation matrix
+        P2: (3, 4), Camera projection matrix
+    """
+    V2C = np.vstack((calib.V2C, np.array([0, 0, 0, 1], dtype=np.float32)))  # (4, 4)
+    R0 = np.hstack((calib.R0, np.zeros((3, 1), dtype=np.float32)))  # (3, 4)
+    R0 = np.vstack((R0, np.array([0, 0, 0, 1], dtype=np.float32)))  # (4, 4)
+    V2R = R0 @ V2C
+    P2 = calib.P2
+    return V2R, P2
 
 def filter_by_range(anno, gt_boxes_lidar, point_cloud_range, is_gt):
         mask = box_utils.mask_boxes_outside_range_numpy(

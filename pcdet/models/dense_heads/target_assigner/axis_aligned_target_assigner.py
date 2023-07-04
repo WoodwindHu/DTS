@@ -95,6 +95,7 @@ class AxisAlignedTargetAssigner(object):
                     'box_reg_targets': [t['box_reg_targets'].view(-1, self.box_coder.code_size) for t in target_list],
                     'reg_weights': [t['reg_weights'].view(-1) for t in target_list]
                 }
+
                 target_dict['box_reg_targets'] = torch.cat(target_dict['box_reg_targets'], dim=0)
                 target_dict['box_cls_labels'] = torch.cat(target_dict['box_cls_labels'], dim=0).view(-1)
                 target_dict['reg_weights'] = torch.cat(target_dict['reg_weights'], dim=0).view(-1)
@@ -140,12 +141,13 @@ class AxisAlignedTargetAssigner(object):
             anchor_by_gt_overlap = iou3d_nms_utils.boxes_iou3d_gpu(anchors[:, 0:7], gt_boxes[:, 0:7]) \
                 if self.match_height else box_utils.boxes3d_nearest_bev_iou(anchors[:, 0:7], gt_boxes[:, 0:7])
 
-            anchor_to_gt_argmax = torch.from_numpy(anchor_by_gt_overlap.cpu().numpy().argmax(axis=1)).cuda()
-            anchor_to_gt_max = anchor_by_gt_overlap[
-                torch.arange(num_anchors, device=anchors.device), anchor_to_gt_argmax
-            ]
+            # NOTE: The speed of these two versions depends the environment and the number of anchors
+            # anchor_to_gt_argmax = torch.from_numpy(anchor_by_gt_overlap.cpu().numpy().argmax(axis=1)).cuda()
+            anchor_to_gt_argmax = anchor_by_gt_overlap.argmax(dim=1)
+            anchor_to_gt_max = anchor_by_gt_overlap[torch.arange(num_anchors, device=anchors.device), anchor_to_gt_argmax]
 
-            gt_to_anchor_argmax = torch.from_numpy(anchor_by_gt_overlap.cpu().numpy().argmax(axis=0)).cuda()
+            # gt_to_anchor_argmax = torch.from_numpy(anchor_by_gt_overlap.cpu().numpy().argmax(axis=0)).cuda()
+            gt_to_anchor_argmax = anchor_by_gt_overlap.argmax(dim=0)
             gt_to_anchor_max = anchor_by_gt_overlap[gt_to_anchor_argmax, torch.arange(num_gt, device=anchors.device)]
             empty_gt_mask = gt_to_anchor_max == 0
             gt_to_anchor_max[empty_gt_mask] = -1
@@ -192,6 +194,7 @@ class AxisAlignedTargetAssigner(object):
             bbox_targets[fg_inds, :] = self.box_coder.encode_torch(fg_gt_boxes, fg_anchors)
 
         reg_weights = anchors.new_zeros((num_anchors,))
+
         if self.norm_by_num_examples:
             num_examples = (labels >= 0).sum()
             num_examples = num_examples if num_examples > 1.0 else 1.0

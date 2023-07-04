@@ -6,7 +6,6 @@ from torch.nn.utils import clip_grad_norm_
 from pcdet.utils import common_utils
 from pcdet.utils import self_training_utils
 from pcdet.config import cfg
-from pcdet.models.model_utils.dsnorm import set_ds_source, set_ds_target
 
 from .train_utils import save_checkpoint, checkpoint_state
 
@@ -20,9 +19,8 @@ def train_one_epoch_mt(model, optimizer, source_reader, target_loader, model_fun
     if rank == 0:
         pbar = tqdm.tqdm(total=total_it_each_epoch, leave=leave_pbar, desc='train', dynamic_ncols=True)
 
-    ps_bbox_nmeter = common_utils.NAverageMeter(len(cfg.CLASS_NAMES))
-    ign_ps_bbox_nmeter = common_utils.NAverageMeter(len(cfg.CLASS_NAMES))
-    loss_meter = common_utils.AverageMeter()
+    ps_bbox_meter = common_utils.AverageMeter()
+    ignore_ps_bbox_meter = common_utils.AverageMeter()
     st_loss_meter = common_utils.AverageMeter()
 
     disp_dict = {}
@@ -41,89 +39,63 @@ def train_one_epoch_mt(model, optimizer, source_reader, target_loader, model_fun
         model.train()
 
         optimizer.zero_grad()
-        if cfg.SELF_TRAIN.SRC.USE_DATA:
-            # forward source data with labels
-            source_batch = source_reader.read_data()
 
-            if cfg.SELF_TRAIN.get('DSNORM', None):
-                model.apply(set_ds_source)
+        
+        try:
+            target_batch = next(dataloader_iter)
+        except StopIteration:
+            dataloader_iter = iter(target_loader)
+            target_batch = next(dataloader_iter)
+            print('new iters')
 
-            if cfg.SELF_TRAIN.SRC.get('SEP_LOSS_WEIGHTS', None):
-                source_batch['SEP_LOSS_WEIGHTS'] = cfg.SELF_TRAIN.SRC.SEP_LOSS_WEIGHTS
 
-            loss, tb_dict, disp_dict = model_func(model, source_batch)
-            loss = cfg.SELF_TRAIN.SRC.get('LOSS_WEIGHT', 1.0) * loss
-            loss.backward()
-            loss_meter.update(loss.item())
-            disp_dict.update({'loss': "{:.3f}({:.3f})".format(loss_meter.val, loss_meter.avg)})
+        # parameters for save pseudo label on the fly
+        st_loss, st_tb_dict, st_disp_dict, batch = model_func(model, target_batch, ema_model)
+        st_loss = cfg.SELF_TRAIN.TAR.get('LOSS_WEIGHT', 1.0) * st_loss
+        st_loss.backward()
+        st_loss_meter.update(st_loss.item())
 
-            if not cfg.SELF_TRAIN.SRC.get('USE_GRAD', None):
-                optimizer.zero_grad()
+        # count number of used ps bboxes in this batch
+        pos_pseudo_bbox = batch['pos_ps_bbox'].mean().item()
+        ign_pseudo_bbox = batch['ign_ps_bbox'].mean().item()
+        ps_bbox_meter.update(pos_pseudo_bbox)
+        ignore_ps_bbox_meter.update(ign_pseudo_bbox)
 
-        if cfg.SELF_TRAIN.TAR.USE_DATA:
-            try:
-                target_batch = next(dataloader_iter)
-            except StopIteration:
-                dataloader_iter = iter(target_loader)
-                target_batch = next(dataloader_iter)
-                print('new iters')
-
-            if cfg.SELF_TRAIN.get('DSNORM', None):
-                model.apply(set_ds_target)
-
-            if cfg.SELF_TRAIN.TAR.get('SEP_LOSS_WEIGHTS', None):
-                target_batch['SEP_LOSS_WEIGHTS'] = cfg.SELF_TRAIN.TAR.SEP_LOSS_WEIGHTS
-
-            # parameters for save pseudo label on the fly
-            st_loss, st_tb_dict, st_disp_dict, batch = model_func(model, target_batch, ema_model)
-            st_loss = cfg.SELF_TRAIN.TAR.get('LOSS_WEIGHT', 1.0) * st_loss
-            st_loss.backward()
-            st_loss_meter.update(st_loss.item())
-
-            # count number of used ps bboxes in this batch
-            pos_pseudo_bbox = batch['pos_ps_bbox'].mean(dim=0).cpu().numpy()
-            ign_pseudo_bbox = batch['ign_ps_bbox'].mean(dim=0).cpu().numpy()
-            ps_bbox_nmeter.update(pos_pseudo_bbox.tolist())
-            ign_ps_bbox_nmeter.update(ign_pseudo_bbox.tolist())
-            pos_ps_result = ps_bbox_nmeter.aggregate_result()
-            ign_ps_result = ign_ps_bbox_nmeter.aggregate_result()
-
-            st_tb_dict = common_utils.add_prefix_to_dict(st_tb_dict, 'st_')
-            disp_dict.update(common_utils.add_prefix_to_dict(st_disp_dict, 'st_'))
-            disp_dict.update({'st_loss': "{:.3f}({:.3f})".format(st_loss_meter.val, st_loss_meter.avg),
-                              'pos_ps_box': pos_ps_result,
-                              'ign_ps_box': ign_ps_result})
-            update_ema_variables(model, ema_model, model_cfg=ema_model.model_cfg)
+        st_tb_dict = common_utils.add_prefix_to_dict(st_tb_dict, 'st_')
+        disp_dict.update(common_utils.add_prefix_to_dict(st_disp_dict, 'st_'))
+        disp_dict.update({'st_loss': "{:.3f}({:.3f})".format(st_loss_meter.val, st_loss_meter.avg),
+                            'pos_ps_box': ps_bbox_meter.avg,
+                            'ign_ps_box': ignore_ps_bbox_meter.avg})
 
         clip_grad_norm_(model.parameters(), optim_cfg.GRAD_NORM_CLIP)
         optimizer.step()
+
         accumulated_iter += 1
+        update_ema_variables(model, ema_model, model_cfg=ema_model.model_cfg)
+
 
         # log to console and tensorboard
         if rank == 0:
             pbar.update()
-            pbar.set_postfix(dict(total_it=accumulated_iter, pos_ps_box=pos_ps_result,
-                                  ign_ps_box=ign_ps_result))
+            pbar.set_postfix(dict(total_it=accumulated_iter, pos_ps_box=ps_bbox_meter.avg,
+                                  ign_ps_box=ignore_ps_bbox_meter.avg))
             tbar.set_postfix(disp_dict)
             tbar.refresh()
 
             if tb_log is not None:
                 tb_log.add_scalar('meta_data/learning_rate', cur_lr, accumulated_iter)
-                if cfg.SELF_TRAIN.SRC.USE_DATA:
-                    tb_log.add_scalar('train/loss', loss, accumulated_iter)
-                    for key, val in tb_dict.items():
-                        tb_log.add_scalar('train/' + key, val, accumulated_iter)
-                if cfg.SELF_TRAIN.TAR.USE_DATA:
-                    tb_log.add_scalar('train/st_loss', st_loss, accumulated_iter)
-                    for key, val in st_tb_dict.items():
-                        tb_log.add_scalar('train/' + key, val, accumulated_iter)
+                tb_log.add_scalar('train/st_loss', st_loss, accumulated_iter)
+                tb_log.add_scalar('train/pos_ps_bbox', ps_bbox_meter.val, accumulated_iter)
+                tb_log.add_scalar('train/ign_ps_bbox', ignore_ps_bbox_meter.val, accumulated_iter)
+                for key, val in st_tb_dict.items():
+                    tb_log.add_scalar('train/' + key, val, accumulated_iter)
     if rank == 0:
         pbar.close()
         for i, class_names in enumerate(target_loader.dataset.class_names):
             tb_log.add_scalar(
-                'ps_box/pos_%s' % class_names, ps_bbox_nmeter.meters[i].avg, cur_epoch)
+                'ps_box/pos_%s' % class_names, ps_bbox_meter.avg, cur_epoch)
             tb_log.add_scalar(
-                'ps_box/ign_%s' % class_names, ign_ps_bbox_nmeter.meters[i].avg, cur_epoch)
+                'ps_box/ign_%s' % class_names, ignore_ps_bbox_meter.avg, cur_epoch)
 
     return accumulated_iter
 
@@ -143,8 +115,7 @@ def train_model_mt(model, optimizer, source_loader, target_loader, model_func, l
                    source_sampler=None, target_sampler=None, lr_warmup_scheduler=None, ckpt_save_interval=1,
                    max_ckpt_save_num=50, merge_all_iters_to_one_epoch=False, logger=None, ema_model=None):
     accumulated_iter = start_iter
-    source_reader = common_utils.DataReader(source_loader, source_sampler)
-    source_reader.construct_iter()
+    source_reader = None
 
     # for continue training.
     # if already exist generated pseudo label result
@@ -164,15 +135,15 @@ def train_model_mt(model, optimizer, source_loader, target_loader, model_func, l
                      leave=(rank == 0)) as tbar:
         total_it_each_epoch = len(target_loader)
         if merge_all_iters_to_one_epoch:
-            assert hasattr(target_loader.dataset, 'merge_all_iters_to_one_epoch')
-            target_loader.dataset.merge_all_iters_to_one_epoch(merge=True, epochs=total_epochs)
-            total_it_each_epoch = len(target_loader) // max(total_epochs, 1)
+            raise NotImplementedError
+            # assert hasattr(target_loader.dataset, 'merge_all_iters_to_one_epoch')
+            # target_loader.dataset.merge_all_iters_to_one_epoch(merge=True, epochs=total_epochs)
+            # total_it_each_epoch = len(target_loader) // max(total_epochs, 1)
 
         dataloader_iter = iter(target_loader)
         for cur_epoch in tbar:
             if target_sampler is not None:
                 target_sampler.set_epoch(cur_epoch)
-                source_reader.set_cur_epoch(cur_epoch)
 
             # train one epoch
             if lr_warmup_scheduler is not None and cur_epoch < optim_cfg.WARMUP_EPOCH:

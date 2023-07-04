@@ -88,6 +88,10 @@ if __name__ == '__main__':
                     'src/sampling_gpu.cu', 
                     'src/interpolate.cpp', 
                     'src/interpolate_gpu.cu',
+                    'src/voxel_query.cpp', 
+                    'src/voxel_query_gpu.cu',
+                    'src/vector_pool.cpp',
+                    'src/vector_pool_gpu.cu'
                 ],
             ),
             make_cuda_ext(

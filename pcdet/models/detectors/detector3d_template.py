@@ -9,7 +9,6 @@ from .. import backbones_2d, backbones_3d, dense_heads, roi_heads
 from ..backbones_2d import map_to_bev
 from ..backbones_3d import pfe, vfe
 from ..model_utils import model_nms_utils
-from pcdet.config import cfg
 import numpy as np
 import torch.nn.functional as F
 from ...utils import common_utils
@@ -43,7 +42,8 @@ class Detector3DTemplate(nn.Module):
             'num_point_features': self.dataset.point_feature_encoder.num_point_features,
             'grid_size': self.dataset.grid_size,
             'point_cloud_range': self.dataset.point_cloud_range,
-            'voxel_size': self.dataset.voxel_size
+            'voxel_size': self.dataset.voxel_size,
+            'depth_downsample_factor': self.dataset.depth_downsample_factor
         }
         for module_name in self.module_topology:
             module, model_info_dict = getattr(self, 'build_%s' % module_name)(
@@ -60,7 +60,9 @@ class Detector3DTemplate(nn.Module):
             model_cfg=self.model_cfg.VFE,
             num_point_features=model_info_dict['num_rawpoint_features'],
             point_cloud_range=model_info_dict['point_cloud_range'],
-            voxel_size=model_info_dict['voxel_size']
+            voxel_size=model_info_dict['voxel_size'],
+            grid_size=model_info_dict['grid_size'],
+            depth_downsample_factor=model_info_dict['depth_downsample_factor']
         )
         model_info_dict['num_point_features'] = vfe_module.get_output_feature_dim()
         model_info_dict['module_list'].append(vfe_module)
@@ -79,6 +81,8 @@ class Detector3DTemplate(nn.Module):
         )
         model_info_dict['module_list'].append(backbone_3d_module)
         model_info_dict['num_point_features'] = backbone_3d_module.num_point_features
+        model_info_dict['backbone_channels'] = backbone_3d_module.backbone_channels \
+            if hasattr(backbone_3d_module, 'backbone_channels') else None
         return backbone_3d_module, model_info_dict
 
     def build_map_to_bev_module(self, model_info_dict):
@@ -131,7 +135,8 @@ class Detector3DTemplate(nn.Module):
             class_names=self.class_names,
             grid_size=model_info_dict['grid_size'],
             point_cloud_range=model_info_dict['point_cloud_range'],
-            predict_boxes_when_training=self.model_cfg.get('ROI_HEAD', False)
+            predict_boxes_when_training=self.model_cfg.get('ROI_HEAD', False),
+            voxel_size=model_info_dict.get('voxel_size', False)
         )
         model_info_dict['module_list'].append(dense_head_module)
         return dense_head_module, model_info_dict
@@ -161,6 +166,10 @@ class Detector3DTemplate(nn.Module):
         point_head_module = roi_heads.__all__[self.model_cfg.ROI_HEAD.NAME](
             model_cfg=self.model_cfg.ROI_HEAD,
             input_channels=model_info_dict['num_point_features'],
+            backbone_channels=model_info_dict['backbone_channels'] \
+                                if 'backbone_channels' in model_info_dict else None,
+            point_cloud_range=model_info_dict['point_cloud_range'],
+            voxel_size=model_info_dict['voxel_size'],
             num_class=self.num_class if not self.model_cfg.ROI_HEAD.CLASS_AGNOSTIC else 1,
         )
 
@@ -348,9 +357,7 @@ class Detector3DTemplate(nn.Module):
                 update_model_state[key] = val
                 # logger.info('Update weight %s: %s' % (key, str(val.shape)))
 
-        if cfg.get('SELF_TRAIN', None) and cfg.SELF_TRAIN.get('DSNORM', None):
-            self.load_state_dict(spconv_matched_state)
-        elif strict:
+        if strict:
             self.load_state_dict(update_model_state)
         else:
             state_dict.update(update_model_state)
@@ -376,7 +383,7 @@ class Detector3DTemplate(nn.Module):
             if key not in update_model_state:
                 logger.info('Not updated weight %s: %s' % (key, str(state_dict[key].shape)))
 
-        logger.info('==> Done (loaded %d/%d)' % (len(update_model_state), len(self.state_dict())))
+        logger.info('==> Done (loaded %d/%d)' % (len(update_model_state), len(state_dict)))
 
     def load_params_with_optimizer(self, filename, to_cpu=False, optimizer=None, logger=None):
         if not os.path.isfile(filename):
@@ -408,108 +415,6 @@ class Detector3DTemplate(nn.Module):
         logger.info('==> Done')
 
         return it, epoch
-
-    def post_processing_multicriterion(self, batch_dict):
-        """
-        For 
-        Args:
-            batch_dict:
-                batch_size:
-                batch_cls_preds: (B, num_boxes, num_classes | 1) or (N1+N2+..., num_classes | 1)
-                batch_box_preds: (B, num_boxes, 7+C) or (N1+N2+..., 7+C)
-                cls_preds_normalized: indicate whether batch_cls_preds is normalized
-                batch_index: optional (N1+N2+...)
-                roi_labels: (B, num_rois)  1 .. num_classes
-        Returns:
-
-        """
-        post_process_cfg = self.model_cfg.POST_PROCESSING
-        batch_size = batch_dict['batch_size']
-        recall_dict = {}
-        pred_dicts = []
-        for index in range(batch_size):
-            if batch_dict.get('batch_index', None) is not None:
-                assert batch_dict['batch_cls_preds'].shape.__len__() == 2
-                batch_mask = (batch_dict['batch_index'] == index)
-            else:
-                assert batch_dict['batch_cls_preds'].shape.__len__() == 3
-                batch_mask = index
-
-            box_preds = batch_dict['batch_box_preds'][batch_mask]
-            iou_preds = batch_dict['batch_cls_preds'][batch_mask]
-            cls_preds = batch_dict['roi_scores'][batch_mask]
-
-            if isinstance(cls_preds, list):
-                cls_preds = torch.cat(cls_preds).squeeze()
-            else:
-                cls_preds = cls_preds.squeeze()
-
-            src_iou_preds = iou_preds
-            src_box_preds = box_preds
-            src_cls_preds = cls_preds
-            assert iou_preds.shape[1] in [1, self.num_class]
-
-            if not batch_dict['cls_preds_normalized']:
-                iou_preds = torch.sigmoid(iou_preds)
-                cls_preds = torch.sigmoid(cls_preds)
-
-            # TODO
-            if post_process_cfg.NMS_CONFIG.MULTI_CLASSES_NMS:
-                raise NotImplementedError
-            else:
-                iou_preds, label_preds = torch.max(iou_preds, dim=-1)
-                label_preds = batch_dict['roi_labels'][index] if batch_dict.get('has_class_labels',
-                                                                                False) else label_preds + 1
-                if isinstance(label_preds, list):
-                    label_preds = torch.cat(label_preds, dim=0)
-
-                if post_process_cfg.NMS_CONFIG.get('SCORE_WEIGHTS', None):
-                    weight_iou = post_process_cfg.NMS_CONFIG.SCORE_WEIGHTS.iou
-                    weight_cls = post_process_cfg.NMS_CONFIG.SCORE_WEIGHTS.cls
-
-                if post_process_cfg.NMS_CONFIG.get('SCORE_TYPE', None) == 'iou' or \
-                        post_process_cfg.NMS_CONFIG.get('SCORE_TYPE', None) is None:
-                    nms_scores = iou_preds
-                elif post_process_cfg.NMS_CONFIG.SCORE_TYPE == 'cls':
-                    nms_scores = cls_preds
-                elif post_process_cfg.NMS_CONFIG.SCORE_TYPE == 'hybrid_iou_cls':
-                    assert weight_iou + weight_cls == 1
-                    nms_scores = weight_iou * iou_preds + \
-                                 weight_cls * cls_preds
-                else:
-                    raise NotImplementedError
-
-                selected, selected_scores = model_nms_utils.class_agnostic_nms(
-                    box_scores=nms_scores, box_preds=box_preds,
-                    nms_config=post_process_cfg.NMS_CONFIG,
-                    score_thresh=post_process_cfg.SCORE_THRESH
-                )
-
-                if post_process_cfg.OUTPUT_RAW_SCORE:
-                    raise NotImplementedError
-
-                final_scores = selected_scores
-                final_labels = label_preds[selected]
-                final_boxes = box_preds[selected]
-
-            recall_dict = self.generate_recall_record(
-                box_preds=final_boxes if 'rois' not in batch_dict else src_box_preds,
-                recall_dict=recall_dict, batch_index=index, data_dict=batch_dict,
-                thresh_list=post_process_cfg.RECALL_THRESH_LIST
-            )
-
-            record_dict = {
-                'pred_boxes': final_boxes,
-                'pred_scores': final_scores,
-                'pred_labels': final_labels,
-                'pred_cls_scores': cls_preds[selected],
-                'pred_iou_scores': iou_preds[selected]
-            }
-
-            pred_dicts.append(record_dict)
-
-        return pred_dicts, recall_dict
-
 
     ## for mean teacher
     def get_graph_loss(self, batch_target1, batch_target2, reweight=True): 

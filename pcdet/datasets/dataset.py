@@ -1,9 +1,12 @@
 import torch
 import copy
-from pathlib import Path
 from collections import defaultdict
+from pathlib import Path
+
 import numpy as np
 import torch.utils.data as torch_data
+
+from ..utils import common_utils
 from .augmentor.data_augmentor import DataAugmentor
 from .processor.data_processor import DataProcessor
 from .processor.point_feature_encoder import PointFeatureEncoder
@@ -12,7 +15,7 @@ from ..ops.roiaware_pool3d import roiaware_pool3d_utils
 
 
 class DatasetTemplate(torch_data.Dataset):
-    def __init__(self, dataset_cfg=None, class_names=None, training=True, root_path=None, logger=None):
+    def __init__(self, dataset_cfg=None, class_names=None, training=True, root_path=None, logger=None, use_ori=False):
         super().__init__()
         self.dataset_cfg = dataset_cfg
         self.training = training
@@ -40,6 +43,12 @@ class DatasetTemplate(torch_data.Dataset):
         self.voxel_size = self.data_processor.voxel_size
         self.total_epochs = 0
         self._merge_all_iters_to_one_epoch = False
+
+        if hasattr(self.data_processor, "depth_downsample_factor"):
+            self.depth_downsample_factor = self.data_processor.depth_downsample_factor
+        else:
+            self.depth_downsample_factor = None
+        self.use_ori = use_ori
 
     @property
     def mode(self):
@@ -144,28 +153,23 @@ class DatasetTemplate(torch_data.Dataset):
         return fov_gt_mask
 
     def fill_pseudo_labels(self, input_dict):
-        gt_boxes = self_training_utils.load_ps_label(input_dict['frame_id'])
-        gt_scores = gt_boxes[:, 8]
-        gt_classes = gt_boxes[:, 7]
-        gt_boxes = gt_boxes[:, :7]
+        ps_boxes = self_training_utils.load_ps_label(input_dict['frame_id'])
+        ps_scores = ps_boxes[:, 8]
+        ps_classes = ps_boxes[:, 7]
+        ps_boxes = ps_boxes[:, :7]
 
-        # only suitable for only one classes, generating gt_names for prepare data
-        gt_names = np.array(self.class_names)[np.abs(gt_classes.astype(np.int32)) - 1]
+        # only suitable for only one classes, generating ps_names for prepare data
+        ps_names = np.array([self.class_names[0] for n in ps_boxes])
 
-        input_dict['gt_boxes'] = gt_boxes
-        input_dict['gt_names'] = gt_names
-        input_dict['gt_classes'] = gt_classes
-        input_dict['gt_scores'] = gt_scores
-        input_dict['pos_ps_bbox'] = np.zeros((len(self.class_names)), dtype=np.float32)
-        input_dict['ign_ps_bbox'] = np.zeros((len(self.class_names)), dtype=np.float32)
-        for i in range(len(self.class_names)):
-            num_total_boxes = (np.abs(gt_classes) == (i+1)).sum()
-            num_ps_bbox = (gt_classes == (i+1)).sum()
-            input_dict['pos_ps_bbox'][i] = num_ps_bbox
-            input_dict['ign_ps_bbox'][i] = num_total_boxes - num_ps_bbox
 
+        input_dict['gt_boxes'] = ps_boxes
+        input_dict['gt_names'] = ps_names
+        input_dict['gt_classes'] = ps_classes
+        input_dict['gt_scores'] = ps_scores
+        input_dict['pos_ps_bbox'] = (ps_classes > 0).sum()
+        input_dict['ign_ps_bbox'] = ps_boxes.shape[0] - input_dict['pos_ps_bbox']
         input_dict.pop('num_points_in_gt', None)
-
+        
     def merge_all_iters_to_one_epoch(self, merge=True, epochs=None):
         if merge:
             self._merge_all_iters_to_one_epoch = True
@@ -194,7 +198,7 @@ class DatasetTemplate(torch_data.Dataset):
         """
         Args:
             data_dict:
-                points: (N, 3 + C_in)
+                points: optional, (N, 3 + C_in)
                 gt_boxes: optional, (N, 7 + C) [x, y, z, dx, dy, dz, heading, ...]
                 gt_names: optional, (N), string
                 ...
@@ -252,7 +256,11 @@ class DatasetTemplate(torch_data.Dataset):
             gt_boxes = np.concatenate((data_dict['gt_boxes'], gt_classes.reshape(-1, 1).astype(np.float32)), axis=1)
             data_dict['gt_boxes'] = gt_boxes
 
-        data_dict = self.point_feature_encoder.forward(data_dict)
+            if data_dict.get('gt_boxes2d', None) is not None:
+                data_dict['gt_boxes2d'] = data_dict['gt_boxes2d'][selected]
+
+        if data_dict.get('points', None) is not None:
+            data_dict = self.point_feature_encoder.forward(data_dict)
 
         data_dict = self.data_processor.forward(
             data_dict=data_dict
@@ -298,6 +306,43 @@ class DatasetTemplate(torch_data.Dataset):
                     for k in range(batch_size):
                         batch_scores[k, :val[k].__len__()] = val[k]
                     ret[key] = batch_scores
+                elif key in ['gt_boxes2d']:
+                    max_boxes = 0
+                    max_boxes = max([len(x) for x in val])
+                    batch_boxes2d = np.zeros((batch_size, max_boxes, val[0].shape[-1]), dtype=np.float32)
+                    for k in range(batch_size):
+                        if val[k].size > 0:
+                            batch_boxes2d[k, :val[k].__len__(), :] = val[k]
+                    ret[key] = batch_boxes2d
+                elif key in ["images", "depth_maps"]:
+                    # Get largest image size (H, W)
+                    max_h = 0
+                    max_w = 0
+                    for image in val:
+                        max_h = max(max_h, image.shape[0])
+                        max_w = max(max_w, image.shape[1])
+
+                    # Change size of images
+                    images = []
+                    for image in val:
+                        pad_h = common_utils.get_pad_params(desired_size=max_h, cur_size=image.shape[0])
+                        pad_w = common_utils.get_pad_params(desired_size=max_w, cur_size=image.shape[1])
+                        pad_width = (pad_h, pad_w)
+                        # Pad with nan, to be replaced later in the pipeline.
+                        pad_value = np.nan
+
+                        if key == "images":
+                            pad_width = (pad_h, pad_w, (0, 0))
+                        elif key == "depth_maps":
+                            pad_width = (pad_h, pad_w)
+
+                        image_pad = np.pad(image,
+                                           pad_width=pad_width,
+                                           mode='constant',
+                                           constant_values=pad_value)
+
+                        images.append(image_pad)
+                    ret[key] = np.stack(images, axis=0)
                 elif key in ['object_scale_noise', 'object_rotate_noise']:
                         max_noise = max([len(x) for x in val])
                         batch_noise = np.zeros((batch_size, max_noise), dtype=np.float32)

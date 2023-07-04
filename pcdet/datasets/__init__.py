@@ -1,22 +1,23 @@
 import torch
 from torch.utils.data import DataLoader
 from torch.utils.data import DistributedSampler as _DistributedSampler
+
 from pcdet.utils import common_utils
 
 from .dataset import DatasetTemplate
 from .kitti.kitti_dataset import KittiDataset
 from .kitti.kitti_dataset_mt import KittiDatasetMT
-from .waymo.waymo_dataset import WaymoDataset
 from .nuscenes.nuscenes_dataset import NuScenesDataset
 from .nuscenes.nuscenes_dataset_mt import NuScenesDatasetMT
+from .waymo.waymo_dataset import WaymoDataset
 from .lyft.lyft_dataset import LyftDataset
 
 
 __all__ = {
     'DatasetTemplate': DatasetTemplate,
     'KittiDataset': KittiDataset,
-    'WaymoDataset': WaymoDataset,
     'NuScenesDataset': NuScenesDataset,
+    'WaymoDataset': WaymoDataset,
     'NuScenesDatasetMT': NuScenesDatasetMT,
     'LyftDataset': LyftDataset,
     'KittiDatasetMT':KittiDatasetMT,

@@ -5,6 +5,13 @@ import torch
 
 from .detectors import build_detector
 
+try:
+    import kornia
+except:
+    pass 
+    # print('Warning: kornia is not installed. This package is only required by CaDDN')
+
+
 
 def build_network(model_cfg, num_class, dataset):
     model = build_detector(
@@ -14,30 +21,33 @@ def build_network(model_cfg, num_class, dataset):
 
 
 def load_data_to_gpu(batch_dict):
-    for key, val in batch_dict.items():
-        if not isinstance(val, np.ndarray):
-            continue
-        if key in ['frame_id', 'metadata', 'calib', 'image_shape']:
-            continue
-        batch_dict[key] = torch.from_numpy(val).float().cuda()
-
-def load_data_to_gpu(batch_dict):
     if isinstance(batch_dict, dict):
         for key, val in batch_dict.items():
             if not isinstance(val, np.ndarray):
                 continue
-            if key in ['frame_id', 'metadata', 'calib', 'image_shape']:
+            elif key in ['frame_id', 'metadata', 'calib']:
                 continue
-            batch_dict[key] = torch.from_numpy(val).float().cuda()
+            elif key in ['images']:
+                batch_dict[key] = kornia.image_to_tensor(val).float().cuda().contiguous()
+            elif key in ['image_shape']:
+                batch_dict[key] = torch.from_numpy(val).int().cuda()
+            else:
+                batch_dict[key] = torch.from_numpy(val).float().cuda()
     else:
         assert isinstance(batch_dict, list)
         for batch in batch_dict:
             for key, val in batch.items():
                 if not isinstance(val, np.ndarray):
                     continue
-                if key in ['frame_id', 'metadata', 'calib', 'image_shape']:
+                elif key in ['frame_id', 'metadata', 'calib']:
                     continue
-                batch[key] = torch.from_numpy(val).float().cuda()
+                elif key in ['images']:
+                    batch[key] = kornia.image_to_tensor(val).float().cuda().contiguous()
+                elif key in ['image_shape']:
+                    batch[key] = torch.from_numpy(val).int().cuda()
+                else:
+                    batch[key] = torch.from_numpy(val).float().cuda()
+        
 
 
 def model_fn_decorator():

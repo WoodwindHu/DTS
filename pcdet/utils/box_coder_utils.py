@@ -166,8 +166,7 @@ class PointResidualCoder(object):
 
         if self.use_mean_size:
             assert gt_classes.max() <= self.mean_size.shape[0]
-            # use aboslute value to handle ignore labels in st3d
-            point_anchor_size = self.mean_size[torch.abs(gt_classes) - 1]
+            point_anchor_size = self.mean_size[gt_classes - 1]
             dxa, dya, dza = torch.split(point_anchor_size, 1, dim=-1)
             diagonal = torch.sqrt(dxa ** 2 + dya ** 2)
             xt = (xg - xa) / diagonal

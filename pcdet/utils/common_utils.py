@@ -4,7 +4,7 @@ import pickle
 import random
 import shutil
 import subprocess
-import copy
+import SharedArray
 
 import numpy as np
 import torch
@@ -88,8 +88,7 @@ def get_voxel_centers(voxel_coords, downsample_times, voxel_size, point_cloud_ra
 def create_logger(log_file=None, rank=0, log_level=logging.INFO):
     logger = logging.getLogger(__name__)
     logger.setLevel(log_level if rank == 0 else 'ERROR')
-    formatter = logging.Formatter('[%(asctime)s  %(filename)s %(lineno)d '
-                                  '%(levelname)5s]  %(message)s')
+    formatter = logging.Formatter('%(asctime)s  %(levelname)5s  %(message)s')
     console = logging.StreamHandler()
     console.setLevel(log_level if rank == 0 else 'ERROR')
     console.setFormatter(formatter)
@@ -99,6 +98,7 @@ def create_logger(log_file=None, rank=0, log_level=logging.INFO):
         file_handler.setLevel(log_level if rank == 0 else 'ERROR')
         file_handler.setFormatter(formatter)
         logger.addHandler(file_handler)
+    logger.propagate = False
     return logger
 
 
@@ -106,10 +106,26 @@ def set_random_seed(seed):
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
-    torch.cuda.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
+
+
+def get_pad_params(desired_size, cur_size):
+    """
+    Get padding parameters for np.pad function
+    Args:
+        desired_size: int, Desired padded output size
+        cur_size: int, Current size. Should always be less than or equal to cur_size
+    Returns:
+        pad_params: tuple(int), Number of values padded to the edges (before, after)
+    """
+    assert desired_size >= cur_size
+
+    # Calculate amount to pad
+    diff = desired_size - cur_size
+    pad_params = (0, diff)
+
+    return pad_params
 
 
 def keep_arrays_by_name(gt_names, used_classes):
@@ -153,15 +169,15 @@ def init_dist_pytorch(tcp_port, local_rank, backend='nccl'):
     torch.cuda.set_device(local_rank % num_gpus)
     dist.init_process_group(
         backend=backend,
-        init_method='tcp://127.0.0.1:%d' % tcp_port,
-        rank=local_rank,
-        world_size=num_gpus
+        # init_method='tcp://127.0.0.1:%d' % tcp_port,
+        # rank=local_rank,
+        # world_size=num_gpus
     )
     rank = dist.get_rank()
     return num_gpus, rank
 
 
-def get_dist_info():
+def get_dist_info(return_gpu_per_machine=False):
     if torch.__version__ < '1.0':
         initialized = dist._initialized
     else:
@@ -175,6 +191,11 @@ def get_dist_info():
     else:
         rank = 0
         world_size = 1
+
+    if return_gpu_per_machine:
+        gpu_per_machine = torch.cuda.device_count()
+        return rank, world_size, gpu_per_machine
+
     return rank, world_size
 
 
@@ -196,117 +217,10 @@ def merge_results_dist(result_part, size, tmpdir):
 
     ordered_results = []
     for res in zip(*part_list):
-        ordered_results.extend(list(res)) 
+        ordered_results.extend(list(res))
     ordered_results = ordered_results[:size]
     shutil.rmtree(tmpdir)
     return ordered_results
-
-
-def add_prefix_to_dict(dict, prefix):
-    for key in list(dict.keys()):
-        dict[prefix + key] = dict.pop(key)
-    return dict
-
-
-class DataReader(object):
-    def __init__(self, dataloader, sampler):
-        self.dataloader = dataloader
-        self.sampler = sampler
-
-    def construct_iter(self):
-        self.dataloader_iter = iter(self.dataloader)
-
-    def set_cur_epoch(self, cur_epoch):
-        self.cur_epoch = cur_epoch
-
-    def read_data(self):
-        try:
-            return self.dataloader_iter.next()
-        except:
-            if self.sampler is not None:
-                self.sampler.set_epoch(self.cur_epoch)
-            self.construct_iter()
-            return self.dataloader_iter.next()
-
-
-class AverageMeter(object):
-    """Computes and stores the average and current value"""
-    def __init__(self):
-        self.reset()
-
-    def reset(self):
-        self.val = 0
-        self.avg = 0
-        self.sum = 0
-        self.count = 0
-
-    def update(self, val, n=1):
-        self.val = val
-        self.sum += val * n
-        self.count += n
-        self.avg = self.sum / self.count
-
-
-def set_bn_train(m):
-    classname = m.__class__.__name__
-    if classname.find('BatchNorm') != -1:
-        m.train()
-
-
-class NAverageMeter(object):
-    """
-    Contain N AverageMeter and update respectively or simultaneously
-    """
-    def __init__(self, n):
-        self.n = n
-        self.meters = [AverageMeter() for i in range(n)]
-
-    def update(self, val, index=None, attribute='avg'):
-        if isinstance(val, list) and index is None:
-            assert len(val) == self.n
-            for i in range(self.n):
-                self.meters[i].update(val[i])
-        elif isinstance(val, NAverageMeter) and index is None:
-            assert val.n == self.n
-            for i in range(self.n):
-                self.meters[i].update(getattr(val.meters[i], attribute))
-        elif not isinstance(val, list) and index is not None:
-            self.meters[index].update(val)
-        else:
-            raise ValueError
-
-    def aggregate_result(self):
-        result = "("
-        for i in range(self.n):
-            result += "{:.3f},".format(self.meters[i].avg)
-        result += ')'
-        return result
-
-
-def calculate_gradient_norm(model):
-    total_norm = 0
-    for p in model.parameters():
-        param_norm = p.grad.data.norm(2)
-        total_norm += param_norm.item() ** 2
-    total_norm = total_norm ** (1. / 2)
-    return total_norm
-
-
-def mask_dict(result_dict, mask):
-    new_dict = copy.deepcopy(result_dict)
-    for key, value in new_dict.items():
-        new_dict[key] = value[mask]
-    return new_dict
-
-
-def concatenate_array_inside_dict(merged_dict, result_dict):
-    for key, val in result_dict.items():
-        if key not in merged_dict:
-            merged_dict[key] = copy.deepcopy(val)
-        else:
-            merged_dict[key] = np.concatenate([merged_dict[key], copy.deepcopy(val)])
-
-    return merged_dict
 
 def reverse_augmentation(rois, batch_dict, is_points=False):
     '''
@@ -394,3 +308,157 @@ def reverse_augmentation(rois, batch_dict, is_points=False):
                 gt_assignment_list[index] = gt_assignment
 
     return rois, gt_assignment_list
+
+def forward_augmentation(rois, batch_dict, gt_assignment_list, is_points=False):
+    '''
+    modified from https://github.com/Jasonkks/mlcnet
+    Args:
+        rois: (B, roi_num, 7)
+    '''
+    flip_flag_x, flip_flag_y, rotate_flag, scale_flag, object_rotate_flag, object_scale_flag \
+        = False, False, False, False, False, False
+    if 'world_flip_along_x' in batch_dict:
+        flip_flag_x = True
+        world_flip_along_x = batch_dict['world_flip_along_x'] 
+    if 'world_flip_along_y' in batch_dict:
+        flip_flag_y = True
+        world_flip_along_y = batch_dict['world_flip_along_y'] 
+    if 'world_rotation' in batch_dict:
+        rotate_flag = True
+        world_rotation = batch_dict['world_rotation']
+    if 'world_scaling' in batch_dict:
+        scale_flag = True
+        world_scaling = batch_dict['world_scaling']
+    if 'object_rotate_noise' in batch_dict:
+        object_rotate_flag = True
+        object_rotate_noise = batch_dict['object_rotate_noise']
+    if 'object_scale_noise' in batch_dict:
+        object_scale_flag = True
+        object_scale_noise = batch_dict['object_scale_noise']
+    batch_size = rois.shape[0]
+
+    if is_points:
+        if is_points:
+            if scale_flag:
+                scale_factor = world_scaling
+                scale_factor = scale_factor.view(scale_factor.shape[0], 1, 1)
+                rois *= scale_factor
+    else:
+        assert len(rois.shape) == 3
+        for index in range(batch_size):
+            cur_roi, gt_assignment = rois[index], gt_assignment_list[index]
+            if object_rotate_flag:
+                for i in range(cur_roi.shape[0]):
+                    cur_roi[i, 6] -= object_rotate_noise[index][gt_assignment[i]]
+            if object_scale_flag:
+                for i in range(cur_roi.shape[0]):
+                    cur_roi[i, 3:6] /= object_scale_noise[index][gt_assignment[i]]
+            rois[index] = cur_roi
+            # flip
+            if flip_flag_x and world_flip_along_x[index] == 1:
+                rois[index,:, 1] = -rois[index,:, 1]
+                rois[index,:, 6] = rois[index,:, 6]
+            if flip_flag_y and world_flip_along_y[index] == 1:
+                rois[index,:, 0] = -rois[index,:, 0]
+                rois[index,:, 6] = -(rois[index,:, 6] + np.pi)
+            # rotation
+            if rotate_flag:
+                rotation_angle = world_rotation[index].item()
+                cur_rois = rois[index].cpu()
+                rois[index, :, 0:3] = rotate_points_along_z(cur_rois[np.newaxis, :, 0:3], np.array([rotation_angle]))[0].cuda()
+                rois[index, :, 6] += rotation_angle
+            # scale
+            if scale_flag:
+                scale_factor = world_scaling[index]
+                rois[index,0:6] *= scale_factor
+                # print('forward scale!!!!')
+            rois[index, :, 6] = limit_period(
+                rois[index, :, 6], offset=0.5, period=2 * np.pi
+                )
+
+    return rois
+
+def scatter_point_inds(indices, point_inds, shape):
+    ret = -1 * torch.ones(*shape, dtype=point_inds.dtype, device=point_inds.device)
+    ndim = indices.shape[-1]
+    flattened_indices = indices.view(-1, ndim)
+    slices = [flattened_indices[:, i] for i in range(ndim)]
+    ret[slices] = point_inds
+    return ret
+
+
+def generate_voxel2pinds(sparse_tensor):
+    device = sparse_tensor.indices.device
+    batch_size = sparse_tensor.batch_size
+    spatial_shape = sparse_tensor.spatial_shape
+    indices = sparse_tensor.indices.long()
+    point_indices = torch.arange(indices.shape[0], device=device, dtype=torch.int32)
+    output_shape = [batch_size] + list(spatial_shape)
+    v2pinds_tensor = scatter_point_inds(indices, point_indices, output_shape)
+    return v2pinds_tensor
+
+
+def sa_create(name, var):
+    x = SharedArray.create(name, var.shape, dtype=var.dtype)
+    x[...] = var[...]
+    x.flags.writeable = False
+    return x
+
+def add_prefix_to_dict(dict, prefix):
+    for key in list(dict.keys()):
+        dict[prefix + key] = dict.pop(key)
+    return dict
+
+
+class DataReader(object):
+    def __init__(self, dataloader, sampler):
+        self.dataloader = dataloader
+        self.sampler = sampler
+
+    def construct_iter(self):
+        self.dataloader_iter = iter(self.dataloader)
+
+    def set_cur_epoch(self, cur_epoch):
+        self.cur_epoch = cur_epoch
+
+    def read_data(self):
+        try:
+            return self.dataloader_iter.next()
+        except:
+            if self.sampler is not None:
+                self.sampler.set_epoch(self.cur_epoch)
+            self.construct_iter()
+            return self.dataloader_iter.next()
+
+
+class AverageMeter(object):
+    """Computes and stores the average and current value"""
+    def __init__(self):
+        self.reset()
+
+    def reset(self):
+        self.val = 0
+        self.avg = 0
+        self.sum = 0
+        self.count = 0
+
+    def update(self, val, n=1):
+        self.val = val
+        self.sum += val * n
+        self.count += n
+        self.avg = self.sum / self.count
+
+
+def set_bn_train(m):
+    classname = m.__class__.__name__
+    if classname.find('BatchNorm') != -1:
+        m.train()
+
+
+def calculate_gradient_norm(model):
+    total_norm = 0
+    for p in model.parameters():
+        param_norm = p.grad.data.norm(2)
+        total_norm += param_norm.item() ** 2
+    total_norm = total_norm ** (1. / 2)
+    return total_norm
